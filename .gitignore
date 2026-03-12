@@ -1,0 +1,14 @@
+venv/
+__pycache__/
+*.pyc
+
+# Model weight files (too large for git, download via download_weights.py)
+weights/
+*.pt
+
+# Logs
+logs/*.csv
+
+# OS junk
+.DS_Store
+Thumbs.db

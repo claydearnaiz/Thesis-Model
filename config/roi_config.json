@@ -1,0 +1,38 @@
+{
+    "camera_source": 0,
+    "confidence_threshold": 0.5,
+    "frame_width": 640,
+    "frame_height": 480,
+    "rois": [
+        {
+            "name": "zone1",
+            "points": [
+                [
+                    8,
+                    9
+                ],
+                [
+                    635,
+                    8
+                ],
+                [
+                    632,
+                    467
+                ],
+                [
+                    6,
+                    469
+                ],
+                [
+                    7,
+                    12
+                ]
+            ],
+            "color": [
+                0,
+                255,
+                0
+            ]
+        }
+    ]
+}
