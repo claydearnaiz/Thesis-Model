@@ -1,12 +1,24 @@
 # Canteen Monitoring System
 
-Real-time person detection within ROI zones using YOLOv5n.
+Real-time crowd counting and buyer estimation using TFLite person detection models.
+Designed for deployment on Raspberry Pi 4B (8GB).
+
+## Models
+
+| Model | Input Size | Framework | Size |
+|-------|-----------|-----------|------|
+| EfficientDet-Lite0 | 320x320 | TensorFlow Lite | ~13MB |
+| SSD MobileNet V2 | 300x300 | TensorFlow Lite | ~18MB |
+
+Both models are pretrained on COCO (person class) — no training required.
 
 ## Setup
 
-### 1. Create Virtual Environment
+### 1. Clone & Create Virtual Environment
 
 ```bash
+git clone https://github.com/claydearnaiz/Thesis-Model.git
+cd Thesis-Model
 python -m venv venv
 venv\Scripts\activate        # Windows
 # source venv/bin/activate   # Linux / Raspberry Pi
@@ -14,29 +26,37 @@ venv\Scripts\activate        # Windows
 
 ### 2. Install Dependencies
 
+**PC (development):**
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Calibrate ROI Zones
+**Raspberry Pi (deployment):**
+```bash
+pip install opencv-python-headless numpy tflite-runtime matplotlib flask
+```
 
-Open your camera feed and draw ROI polygons interactively:
+### 3. Download Model Weights
+
+```bash
+python download_weights.py all
+```
+
+### 4. Calibrate ROI Zones
 
 ```bash
 python src/calibrate_roi.py
 ```
 
 **Controls:**
-- **Left Click** — Place a polygon vertex
-- **R** — Finish current ROI (names it via terminal prompt)
+- **Left Click** — Place polygon vertex
+- **R** — Finish current ROI
 - **U** — Undo last vertex
 - **C** — Clear all ROIs
 - **S** — Save and quit
 - **Q / ESC** — Quit without saving
 
-ROIs are saved to `config/roi_config.json`.
-
-### 4. Run the Monitor
+### 5. Run the Monitor
 
 ```bash
 python src/main.py
@@ -46,26 +66,39 @@ python src/main.py
 
 | Flag | Description |
 |------|-------------|
-| `--config PATH` | Custom config file path |
-| `--source N` | Camera index (0, 1, etc.) |
-| `--no-display` | Headless mode (no GUI window) |
+| `--model NAME` | `efficientdet-lite0` (default) or `mobilenet-ssd` |
+| `--source N` | Camera index (0, 1) or path to video file |
+| `--no-display` | Headless mode (no GUI) |
 | `--log` | Enable CSV logging to `logs/` |
 
-Press **Q** to quit the monitor.
+### 6. Benchmark Models
+
+```bash
+python src/benchmark.py --frames 200 --save
+```
+
+Outputs comparison table, CSV, and chart to `benchmark_results/`.
 
 ## Project Structure
 
 ```
 Thesis Model/
 ├── config/
-│   └── roi_config.json       # ROI definitions + camera settings
-├── logs/                      # Detection CSV logs
+│   └── roi_config.json         # ROI definitions + camera settings
+├── logs/                        # Detection CSV logs
+├── models/
+│   ├── __init__.py              # Model registry
+│   ├── base.py                  # TFLite base detector interface
+│   ├── efficientdet_lite0.py    # EfficientDet-Lite0
+│   └── mobilenet_ssd.py         # SSD MobileNet V2
+├── weights/                     # TFLite model files (downloaded)
+├── benchmark_results/           # Benchmark outputs
 ├── src/
-│   ├── calibrate_roi.py       # Visual ROI calibration tool
-│   ├── detector.py            # YOLOv5n person detection wrapper
-│   ├── main.py                # Main monitoring entry point
-│   └── roi_manager.py         # ROI loading, saving, hit-testing
-├── implementation.md
+│   ├── benchmark.py             # Model comparison tool
+│   ├── calibrate_roi.py         # Visual ROI calibration
+│   ├── main.py                  # Main monitoring entry point
+│   └── roi_manager.py           # ROI loading, saving, hit-testing
+├── download_weights.py
 ├── requirements.txt
 └── README.md
 ```
@@ -73,8 +106,7 @@ Thesis Model/
 ## How It Works
 
 1. Camera captures frames continuously
-2. YOLOv5n detects all "person" class objects in each frame
-3. Center point of each bounding box is computed
-4. Each center point is tested against all defined ROI polygons
-5. If a center falls inside an ROI, that person is counted for that zone
-6. Results are displayed on-screen and optionally logged to CSV
+2. TFLite model detects all persons in each frame (crowd count)
+3. Center point of each bounding box is tested against ROI polygons
+4. Persons inside ROI zones are counted as estimated buyers
+5. Results displayed on-screen and optionally logged to CSV

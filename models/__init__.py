@@ -1,13 +1,9 @@
-from models.yolov8s import YOLOv8sDetector
-from models.yolov8n import YOLOv8nDetector
+from models.efficientdet_lite0 import EfficientDetLite0Detector
 from models.mobilenet_ssd import MobileNetSSDDetector
-from models.yolox_nano import YOLOXNanoDetector
 
 MODEL_REGISTRY = {
-    "yolov8s": YOLOv8sDetector,
-    "yolov8n": YOLOv8nDetector,
+    "efficientdet-lite0": EfficientDetLite0Detector,
     "mobilenet-ssd": MobileNetSSDDetector,
-    "yolox-nano": YOLOXNanoDetector,
 }
 
 

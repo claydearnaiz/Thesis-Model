@@ -49,7 +49,10 @@ def main():
         config = json.load(f)
 
     cam_source = config.get("camera_source", 0)
-    cap = cv2.VideoCapture(cam_source)
+    if isinstance(cam_source, int):
+        cap = cv2.VideoCapture(cam_source, cv2.CAP_DSHOW)
+    else:
+        cap = cv2.VideoCapture(cam_source)
 
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera source {cam_source}")

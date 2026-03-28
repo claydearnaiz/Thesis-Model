@@ -6,7 +6,6 @@ import cv2
 class BaseDetector(ABC):
     """Shared interface for all person detection models."""
 
-    PERSON_CLASS_ID = 0
     name: str = "base"
 
     def __init__(self, confidence: float = 0.5):
