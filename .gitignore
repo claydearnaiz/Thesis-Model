@@ -2,12 +2,12 @@ venv/
 __pycache__/
 *.pyc
 
-# Model weight files (too large for git, download via download_weights.py)
+# Model weight files (download via download_weights.py)
 weights/
-*.pt
 
-# Logs
+# Logs and benchmark outputs
 logs/*.csv
+benchmark_results/
 
 # OS junk
 .DS_Store

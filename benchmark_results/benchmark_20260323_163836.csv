@@ -1,3 +1,0 @@
-model,avg_fps,avg_time_ms,min_time_ms,max_time_ms,total_detections,avg_detections_per_frame,detection_std,avg_confidence,frames_processed
-efficientdet-lite0,12.9,77.6,56.6,154.2,100,1.0,0.0,84.1,100
-mobilenet-ssd,14.1,70.9,39.6,305.3,100,1.0,0.0,100.0,100
