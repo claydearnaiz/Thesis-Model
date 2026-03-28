@@ -44,13 +44,18 @@ def build_tile_grid(frame_w: int, frame_h: int) -> list[tuple]:
     return tiles
 
 
-def _deduplicate(detections: list[dict], dist_thresh: int) -> list[dict]:
-    """
-    Remove duplicate detections using center-distance.
+def _box_size(det: dict) -> int:
+    x1, y1, x2, y2 = det["bbox"]
+    return max(x2 - x1, y2 - y1)
 
-    Sorted by confidence descending — higher-confidence detections survive.
-    If two centers are within dist_thresh pixels (both x and y), the
-    lower-confidence one is dropped.
+
+def _deduplicate(detections: list[dict], min_dist: int) -> list[dict]:
+    """
+    Remove duplicate detections using adaptive center-distance.
+
+    Distance threshold = max(half the larger box's size, min_dist).
+    This scales with the person's apparent size: big subject up close gets
+    a large merge radius, small person in bird's-eye gets a tight one.
     """
     if len(detections) <= 1:
         return detections
@@ -60,10 +65,12 @@ def _deduplicate(detections: list[dict], dist_thresh: int) -> list[dict]:
 
     for d in dets:
         cx, cy = d["center"]
+        d_size = _box_size(d)
         is_dup = False
         for k in keep:
             kx, ky = k["center"]
-            if abs(cx - kx) < dist_thresh and abs(cy - ky) < dist_thresh:
+            thresh = max(max(d_size, _box_size(k)) * 0.5, min_dist)
+            if abs(cx - kx) < thresh and abs(cy - ky) < thresh:
                 is_dup = True
                 break
         if not is_dup:
