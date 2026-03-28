@@ -13,6 +13,7 @@ Controls:
 """
 
 import cv2
+import platform
 import json
 import sys
 from pathlib import Path
@@ -49,7 +50,7 @@ def main():
         config = json.load(f)
 
     cam_source = config.get("camera_source", 0)
-    if isinstance(cam_source, int):
+    if isinstance(cam_source, int) and platform.system() == "Windows":
         cap = cv2.VideoCapture(cam_source, cv2.CAP_DSHOW)
     else:
         cap = cv2.VideoCapture(cam_source)

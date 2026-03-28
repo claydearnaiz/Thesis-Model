@@ -43,7 +43,8 @@ def parse_args():
 
 def capture_frames(source, num_frames: int) -> list[np.ndarray]:
     src = int(source) if source.isdigit() else source
-    if isinstance(src, int):
+    import platform
+    if isinstance(src, int) and platform.system() == "Windows":
         cap = cv2.VideoCapture(src, cv2.CAP_DSHOW)
     else:
         cap = cv2.VideoCapture(src)

@@ -16,6 +16,7 @@ import json
 import sys
 import time
 import csv
+import platform
 import cv2
 from pathlib import Path
 from datetime import datetime
@@ -81,7 +82,7 @@ def main():
     if not roi_mgr.rois:
         print("WARNING: No ROIs defined. Run calibrate_roi.py first.")
 
-    if isinstance(cam_source, int):
+    if isinstance(cam_source, int) and platform.system() == "Windows":
         cap = cv2.VideoCapture(cam_source, cv2.CAP_DSHOW)
     else:
         cap = cv2.VideoCapture(cam_source)
