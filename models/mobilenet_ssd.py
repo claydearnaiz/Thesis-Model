@@ -25,6 +25,7 @@ class MobileNetSSDDetector(BaseDetector):
                 f"Expected:\n  {PROTOTXT_PATH}\n  {CAFFEMODEL_PATH}"
             )
         self.net = cv2.dnn.readNetFromCaffe(str(PROTOTXT_PATH), str(CAFFEMODEL_PATH))
+        cv2.setNumThreads(4)
 
         # Warmup inference to avoid cold-start lag on first real frame
         dummy = np.zeros((300, 300, 3), dtype=np.uint8)

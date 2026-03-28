@@ -45,6 +45,8 @@ def parse_args():
                         help="Run without GUI window (headless)")
     parser.add_argument("--log", action="store_true",
                         help="Enable CSV logging of detections")
+    parser.add_argument("--skip-frames", type=int, default=0,
+                        help="Skip N frames between detections (0=process every frame)")
     return parser.parse_args()
 
 
@@ -103,6 +105,9 @@ def main():
     fps_counter = 0
     fps_timer = time.time()
     display_fps = 0.0
+    frame_count = 0
+    skip = args.skip_frames
+    last_detections = []
 
     try:
         while True:
@@ -113,7 +118,13 @@ def main():
                 print("ERROR: Failed to read frame")
                 break
 
-            detections = detector.detect(frame)
+            frame_count += 1
+            if skip > 0 and (frame_count % (skip + 1)) != 1:
+                detections = last_detections
+            else:
+                detections = detector.detect(frame)
+                last_detections = detections
+
             total_persons = len(detections)
 
             roi_labels = []

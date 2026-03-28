@@ -13,7 +13,6 @@ NUM_SCALES = 3
 ASPECT_RATIOS = [1.0, 2.0, 0.5]
 ANCHOR_SCALE = 4.0
 
-# Detect which runtime is available
 _BACKEND = None
 try:
     from tflite_runtime.interpreter import Interpreter
@@ -35,10 +34,8 @@ except ImportError:
 
 
 def _generate_anchors():
-    """Generate EfficientDet-Lite0 anchor boxes for 320x320 input."""
     anchors = []
     scales = [2 ** (i / NUM_SCALES) for i in range(NUM_SCALES)]
-
     for stride in STRIDES:
         grid_h = int(np.ceil(INPUT_SIZE / stride))
         grid_w = int(np.ceil(INPUT_SIZE / stride))
@@ -51,12 +48,21 @@ def _generate_anchors():
                         w = ANCHOR_SCALE * stride * scale * np.sqrt(ratio)
                         h = ANCHOR_SCALE * stride * scale / np.sqrt(ratio)
                         anchors.append([cy, cx, h, w])
-
     return np.array(anchors, dtype=np.float32)
 
 
 def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(-np.clip(x, -50, 50)))
+
+
+def _dequantize(tensor, details):
+    """Dequantize INT8 tensor to float using scale and zero_point."""
+    if details["dtype"] == np.float32:
+        return tensor.astype(np.float32)
+    quant = details["quantization_parameters"]
+    scale = quant["scales"]
+    zero_point = quant["zero_points"]
+    return (tensor.astype(np.float32) - zero_point) * scale
 
 
 class EfficientDetLite0Detector(BaseDetector):
@@ -102,12 +108,25 @@ class EfficientDetLite0Detector(BaseDetector):
         self._detector.detect(mp_img)
 
     def _init_tflite(self):
-        self._interpreter = Interpreter(model_path=str(MODEL_PATH))
+        self._interpreter = Interpreter(
+            model_path=str(MODEL_PATH),
+            num_threads=4,
+        )
         self._interpreter.allocate_tensors()
         self._input_details = self._interpreter.get_input_details()
         self._output_details = self._interpreter.get_output_details()
         self._anchors = _generate_anchors()
 
+        # Identify which output is boxes (shape [...,4]) vs scores (shape [...,90])
+        self._box_idx = 0
+        self._score_idx = 1
+        for i, det in enumerate(self._output_details):
+            if det["shape"][-1] == 4:
+                self._box_idx = i
+            elif det["shape"][-1] == 90:
+                self._score_idx = i
+
+        # Warmup
         dummy = np.zeros((1, INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
         self._interpreter.set_tensor(self._input_details[0]["index"], dummy)
         self._interpreter.invoke()
@@ -115,8 +134,7 @@ class EfficientDetLite0Detector(BaseDetector):
     def detect(self, frame: np.ndarray) -> list[dict]:
         if _BACKEND == "mediapipe":
             return self._detect_mediapipe(frame)
-        else:
-            return self._detect_tflite(frame)
+        return self._detect_tflite(frame)
 
     def _detect_mediapipe(self, frame: np.ndarray) -> list[dict]:
         h, w = frame.shape[:2]
@@ -153,9 +171,14 @@ class EfficientDetLite0Detector(BaseDetector):
         self._interpreter.set_tensor(self._input_details[0]["index"], input_data)
         self._interpreter.invoke()
 
-        # Raw outputs: boxes offsets [1,N,4] and class scores [1,N,90]
-        box_outputs = self._interpreter.get_tensor(self._output_details[0]["index"])[0]
-        class_outputs = self._interpreter.get_tensor(self._output_details[1]["index"])[0]
+        # Get raw tensors and dequantize if INT8
+        raw_boxes = self._interpreter.get_tensor(
+            self._output_details[self._box_idx]["index"])
+        raw_scores = self._interpreter.get_tensor(
+            self._output_details[self._score_idx]["index"])
+
+        box_outputs = _dequantize(raw_boxes, self._output_details[self._box_idx])[0]
+        class_outputs = _dequantize(raw_scores, self._output_details[self._score_idx])[0]
 
         person_scores = _sigmoid(class_outputs[:, PERSON_CLASS_ID])
         mask = person_scores >= self.confidence
@@ -166,38 +189,33 @@ class EfficientDetLite0Detector(BaseDetector):
         box_filtered = box_outputs[mask]
         anchors_filtered = self._anchors[mask]
 
-        # Decode boxes: offsets relative to anchors [cy, cx, h, w]
-        a_cy, a_cx, a_h, a_w = (
-            anchors_filtered[:, 0], anchors_filtered[:, 1],
-            anchors_filtered[:, 2], anchors_filtered[:, 3],
-        )
-        ty, tx, th, tw = (
-            box_filtered[:, 0], box_filtered[:, 1],
-            box_filtered[:, 2], box_filtered[:, 3],
-        )
+        a_cy = anchors_filtered[:, 0]
+        a_cx = anchors_filtered[:, 1]
+        a_h = anchors_filtered[:, 2]
+        a_w = anchors_filtered[:, 3]
+        ty, tx, th, tw = box_filtered[:, 0], box_filtered[:, 1], box_filtered[:, 2], box_filtered[:, 3]
 
         pred_cy = a_cy + ty * a_h
         pred_cx = a_cx + tx * a_w
-        pred_h = a_h * np.exp(th)
-        pred_w = a_w * np.exp(tw)
+        pred_h = a_h * np.exp(np.clip(th, -5, 5))
+        pred_w = a_w * np.exp(np.clip(tw, -5, 5))
 
-        # Convert to pixel coords [0, INPUT_SIZE] then normalize to frame
         y1s = np.clip((pred_cy - pred_h / 2) / INPUT_SIZE * h, 0, h).astype(int)
         x1s = np.clip((pred_cx - pred_w / 2) / INPUT_SIZE * w, 0, w).astype(int)
         y2s = np.clip((pred_cy + pred_h / 2) / INPUT_SIZE * h, 0, h).astype(int)
         x2s = np.clip((pred_cx + pred_w / 2) / INPUT_SIZE * w, 0, w).astype(int)
 
-        # NMS
-        boxes_xywh = np.stack([
-            x1s, y1s, (x2s - x1s), (y2s - y1s)
-        ], axis=1).tolist()
-        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores_filtered.tolist(), self.confidence, 0.45)
+        boxes_xywh = np.stack([x1s, y1s, (x2s - x1s), (y2s - y1s)], axis=1).tolist()
+        indices = cv2.dnn.NMSBoxes(
+            boxes_xywh, scores_filtered.tolist(), self.confidence, 0.45
+        )
         if len(indices) == 0:
             return []
 
         detections = []
         for idx in indices.flatten():
-            x1, y1, x2, y2 = int(x1s[idx]), int(y1s[idx]), int(x2s[idx]), int(y2s[idx])
+            x1, y1 = int(x1s[idx]), int(y1s[idx])
+            x2, y2 = int(x2s[idx]), int(y2s[idx])
             cx = (x1 + x2) // 2
             cy = (y1 + y2) // 2
             detections.append({
