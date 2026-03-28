@@ -2,7 +2,10 @@
 Tiled detection for wide-angle / high-resolution cameras.
 
 Splits the full frame into overlapping tiles, processes one tile per call
-(round-robin), and merges cached results from all tiles with cross-tile NMS.
+(round-robin), and merges cached results from all tiles. Duplicates in
+overlap zones are removed via center-distance deduplication (more robust
+than IoU-based NMS for cross-tile merging, since different tiles produce
+different-sized boxes for the same person).
 
 Grid auto-selection:
   - <= 800px wide  : 1x1 (no tiling, passthrough)
@@ -41,6 +44,34 @@ def build_tile_grid(frame_w: int, frame_h: int) -> list[tuple]:
     return tiles
 
 
+def _deduplicate(detections: list[dict], dist_thresh: int) -> list[dict]:
+    """
+    Remove duplicate detections using center-distance.
+
+    Sorted by confidence descending — higher-confidence detections survive.
+    If two centers are within dist_thresh pixels (both x and y), the
+    lower-confidence one is dropped.
+    """
+    if len(detections) <= 1:
+        return detections
+
+    dets = sorted(detections, key=lambda d: d["confidence"], reverse=True)
+    keep = []
+
+    for d in dets:
+        cx, cy = d["center"]
+        is_dup = False
+        for k in keep:
+            kx, ky = k["center"]
+            if abs(cx - kx) < dist_thresh and abs(cy - ky) < dist_thresh:
+                is_dup = True
+                break
+        if not is_dup:
+            keep.append(d)
+
+    return keep
+
+
 class TiledDetector:
     """
     Wraps any BaseDetector with round-robin tiled inference.
@@ -57,9 +88,13 @@ class TiledDetector:
         self.tile_idx = 0
         self._cache = [[] for _ in self.tiles]
 
+        # Dedup distance: ~3% of the larger dimension — roughly one person-width
+        self._dedup_dist = max(int(max(frame_w, frame_h) * 0.03), 30)
+
         grid_cols = {1: "1x1", 4: "2x2", 6: "3x2"}.get(len(self.tiles), f"{len(self.tiles)}")
         print(f"  [Tiling] {grid_cols} grid = {len(self.tiles)} tiles "
               f"| tile size ~{self.tiles[0][2]-self.tiles[0][0]}x{self.tiles[0][3]-self.tiles[0][1]}px "
+              f"| dedup dist {self._dedup_dist}px "
               f"| full scan every {len(self.tiles)} frames")
 
     def detect(self, frame: np.ndarray) -> list[dict]:
@@ -84,15 +119,4 @@ class TiledDetector:
         for dets in self._cache:
             all_dets.extend(dets)
 
-        if len(all_dets) <= 1:
-            return all_dets
-
-        boxes_xywh = [(d["bbox"][0], d["bbox"][1],
-                        d["bbox"][2] - d["bbox"][0],
-                        d["bbox"][3] - d["bbox"][1]) for d in all_dets]
-        scores = [d["confidence"] for d in all_dets]
-        indices = cv2.dnn.NMSBoxes(boxes_xywh, scores, self.confidence, 0.45)
-
-        if len(indices) == 0:
-            return []
-        return [all_dets[i] for i in indices.flatten()]
+        return _deduplicate(all_dets, self._dedup_dist)
