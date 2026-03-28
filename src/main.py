@@ -237,11 +237,12 @@ def main():
 
             if not args.no_display:
                 if args.tile and isinstance(detector, TiledDetector):
-                    for i, (tx1, ty1, tx2, ty2) in enumerate(detector.tiles):
-                        active = (i == (detector.tile_idx - 1) % len(detector.tiles))
-                        color = (0, 255, 255) if active else (80, 80, 80)
-                        thickness = 2 if active else 1
-                        cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), color, thickness)
+                    last = (detector.tile_idx - 1) % len(detector.tiles)
+                    tx1, ty1, tx2, ty2 = detector.tiles[last]
+                    cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), (0, 255, 255), 2)
+                    cv2.putText(frame, f"tile {last}/{len(detector.tiles)}",
+                                (tx1 + 4, ty2 - 8), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.4, (0, 255, 255), 1)
 
                 roi_mgr.draw_all(frame)
                 BaseDetector.draw_detections(frame, detections, roi_labels)

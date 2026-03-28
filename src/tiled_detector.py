@@ -51,11 +51,11 @@ def _box_size(det: dict) -> int:
 
 def _deduplicate(detections: list[dict], min_dist: int) -> list[dict]:
     """
-    Remove duplicate detections using adaptive center-distance.
+    Remove duplicate detections using adaptive euclidean center-distance.
 
-    Distance threshold = max(half the larger box's size, min_dist).
-    This scales with the person's apparent size: big subject up close gets
-    a large merge radius, small person in bird's-eye gets a tight one.
+    Threshold = 70% of the larger box dimension (or min_dist, whichever is bigger).
+    Uses euclidean distance instead of separate x/y checks for better coverage
+    on diagonal overlaps.
     """
     if len(detections) <= 1:
         return detections
@@ -69,8 +69,9 @@ def _deduplicate(detections: list[dict], min_dist: int) -> list[dict]:
         is_dup = False
         for k in keep:
             kx, ky = k["center"]
-            thresh = max(max(d_size, _box_size(k)) * 0.5, min_dist)
-            if abs(cx - kx) < thresh and abs(cy - ky) < thresh:
+            thresh = max(max(d_size, _box_size(k)) * 0.7, min_dist)
+            dist = ((cx - kx) ** 2 + (cy - ky) ** 2) ** 0.5
+            if dist < thresh:
                 is_dup = True
                 break
         if not is_dup:
