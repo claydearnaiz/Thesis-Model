@@ -56,13 +56,21 @@ def _sigmoid(x):
 
 
 def _dequantize(tensor, details):
-    """Dequantize INT8 tensor to float using scale and zero_point."""
+    """Dequantize INT8/UINT8 tensor to float using scale and zero_point."""
     if details["dtype"] == np.float32:
         return tensor.astype(np.float32)
-    quant = details["quantization_parameters"]
-    scale = quant["scales"]
-    zero_point = quant["zero_points"]
-    return (tensor.astype(np.float32) - zero_point) * scale
+    try:
+        quant = details["quantization_parameters"]
+        scale = quant["scales"]
+        zero_point = quant["zero_points"]
+        if len(scale) > 0:
+            return (tensor.astype(np.float32) - zero_point) * scale
+    except (KeyError, TypeError):
+        pass
+    scale, zero_point = details.get("quantization", (0.0, 0))
+    if scale != 0.0:
+        return (tensor.astype(np.float32) - zero_point) * scale
+    return tensor.astype(np.float32)
 
 
 class EfficientDetLite0Detector(BaseDetector):
@@ -117,7 +125,6 @@ class EfficientDetLite0Detector(BaseDetector):
         self._output_details = self._interpreter.get_output_details()
         self._anchors = _generate_anchors()
 
-        # Identify which output is boxes (shape [...,4]) vs scores (shape [...,90])
         self._box_idx = 0
         self._score_idx = 1
         for i, det in enumerate(self._output_details):
@@ -126,10 +133,21 @@ class EfficientDetLite0Detector(BaseDetector):
             elif det["shape"][-1] == 90:
                 self._score_idx = i
 
-        # Warmup
+        # Warmup + auto-detect whether scores are logits or probabilities
         dummy = np.zeros((1, INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
         self._interpreter.set_tensor(self._input_details[0]["index"], dummy)
         self._interpreter.invoke()
+
+        raw_scores = self._interpreter.get_tensor(
+            self._output_details[self._score_idx]["index"])
+        scores_f = _dequantize(raw_scores, self._output_details[self._score_idx])
+        smin, smax = float(scores_f.min()), float(scores_f.max())
+
+        # Logits go well outside [0,1]; probabilities stay inside
+        self._apply_sigmoid = (smin < -0.5 or smax > 1.5)
+
+        print(f"  [EfficientDet TFLite] scores range on dummy: "
+              f"[{smin:.4f}, {smax:.4f}] | sigmoid={'ON' if self._apply_sigmoid else 'OFF'}")
 
     def detect(self, frame: np.ndarray) -> list[dict]:
         if _BACKEND == "mediapipe":
@@ -171,7 +189,6 @@ class EfficientDetLite0Detector(BaseDetector):
         self._interpreter.set_tensor(self._input_details[0]["index"], input_data)
         self._interpreter.invoke()
 
-        # Get raw tensors and dequantize if INT8
         raw_boxes = self._interpreter.get_tensor(
             self._output_details[self._box_idx]["index"])
         raw_scores = self._interpreter.get_tensor(
@@ -180,7 +197,12 @@ class EfficientDetLite0Detector(BaseDetector):
         box_outputs = _dequantize(raw_boxes, self._output_details[self._box_idx])[0]
         class_outputs = _dequantize(raw_scores, self._output_details[self._score_idx])[0]
 
-        person_scores = _sigmoid(class_outputs[:, PERSON_CLASS_ID])
+        person_raw = class_outputs[:, PERSON_CLASS_ID]
+        if self._apply_sigmoid:
+            person_scores = _sigmoid(person_raw)
+        else:
+            person_scores = person_raw
+
         mask = person_scores >= self.confidence
         if not mask.any():
             return []
@@ -193,7 +215,10 @@ class EfficientDetLite0Detector(BaseDetector):
         a_cx = anchors_filtered[:, 1]
         a_h = anchors_filtered[:, 2]
         a_w = anchors_filtered[:, 3]
-        ty, tx, th, tw = box_filtered[:, 0], box_filtered[:, 1], box_filtered[:, 2], box_filtered[:, 3]
+        ty = box_filtered[:, 0]
+        tx = box_filtered[:, 1]
+        th = box_filtered[:, 2]
+        tw = box_filtered[:, 3]
 
         pred_cy = a_cy + ty * a_h
         pred_cx = a_cx + tx * a_w
@@ -204,6 +229,13 @@ class EfficientDetLite0Detector(BaseDetector):
         x1s = np.clip((pred_cx - pred_w / 2) / INPUT_SIZE * w, 0, w).astype(int)
         y2s = np.clip((pred_cy + pred_h / 2) / INPUT_SIZE * h, 0, h).astype(int)
         x2s = np.clip((pred_cx + pred_w / 2) / INPUT_SIZE * w, 0, w).astype(int)
+
+        # Filter out degenerate boxes (zero or negative area)
+        valid = (x2s > x1s + 5) & (y2s > y1s + 5)
+        if not valid.any():
+            return []
+        x1s, y1s, x2s, y2s = x1s[valid], y1s[valid], x2s[valid], y2s[valid]
+        scores_filtered = scores_filtered[valid]
 
         boxes_xywh = np.stack([x1s, y1s, (x2s - x1s), (y2s - y1s)], axis=1).tolist()
         indices = cv2.dnn.NMSBoxes(
