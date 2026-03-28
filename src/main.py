@@ -10,7 +10,8 @@ Usage:
     python src/main.py --no-display                     # headless mode
     python src/main.py --log                            # enable CSV logging
     python src/main.py --skip-frames 1                  # process every 2nd frame
-    python src/main.py --cam-res 320x240                # lower camera resolution
+    python src/main.py --cam-res 1280x720               # camera resolution
+    python src/main.py --tile                           # tiled detection for wide-angle
 """
 
 import argparse
@@ -28,6 +29,7 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.roi_manager import ROIManager
+from src.tiled_detector import TiledDetector
 from models import get_detector, list_models
 from models.base import BaseDetector
 
@@ -99,7 +101,9 @@ def parse_args():
     parser.add_argument("--skip-frames", type=int, default=0,
                         help="Skip N frames between detections (0=process every frame)")
     parser.add_argument("--cam-res", type=str, default=None,
-                        help="Camera resolution WxH (e.g. 320x240, 640x480)")
+                        help="Camera resolution WxH (e.g. 1280x720, 1920x1080)")
+    parser.add_argument("--tile", action="store_true",
+                        help="Enable tiled detection for wide-angle cameras")
     return parser.parse_args()
 
 
@@ -148,11 +152,22 @@ def main():
         print(f"ERROR: Cannot open camera source {cam_source}")
         return
 
+    # Read one frame to get actual resolution (camera may not honor requested res)
+    ret, probe = cap.read()
+    if ret and probe is not None:
+        actual_h, actual_w = probe.shape[:2]
+    else:
+        actual_w, actual_h = cw, ch
+
+    if args.tile:
+        detector = TiledDetector(detector, actual_w, actual_h)
+
     log_file, csv_writer = setup_logger(args.log)
 
+    tile_info = " | TILED" if args.tile else ""
     skip_info = f" | skip={args.skip_frames}" if args.skip_frames else ""
-    res_info = f" | res={cw}x{ch}"
-    print(f"\nMonitoring started | Model: {detector.name} | Camera: {cam_source} | ROIs: {len(roi_mgr.rois)}{res_info}{skip_info}")
+    res_info = f" | res={actual_w}x{actual_h}"
+    print(f"\nMonitoring started | Model: {detector.name} | Camera: {cam_source} | ROIs: {len(roi_mgr.rois)}{res_info}{skip_info}{tile_info}")
     print("Press Q to quit.\n")
 
     fps_counter = 0
@@ -221,6 +236,13 @@ def main():
                         ])
 
             if not args.no_display:
+                if args.tile and isinstance(detector, TiledDetector):
+                    for i, (tx1, ty1, tx2, ty2) in enumerate(detector.tiles):
+                        active = (i == (detector.tile_idx - 1) % len(detector.tiles))
+                        color = (0, 255, 255) if active else (80, 80, 80)
+                        thickness = 2 if active else 1
+                        cv2.rectangle(frame, (tx1, ty1), (tx2, ty2), color, thickness)
+
                 roi_mgr.draw_all(frame)
                 BaseDetector.draw_detections(frame, detections, roi_labels)
 
