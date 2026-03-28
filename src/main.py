@@ -9,6 +9,8 @@ Usage:
     python src/main.py --source 1                       # different camera
     python src/main.py --no-display                     # headless mode
     python src/main.py --log                            # enable CSV logging
+    python src/main.py --skip-frames 1                  # process every 2nd frame
+    python src/main.py --cam-res 320x240                # lower camera resolution
 """
 
 import argparse
@@ -17,7 +19,9 @@ import sys
 import time
 import csv
 import platform
+import threading
 import cv2
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 
@@ -29,6 +33,53 @@ from models.base import BaseDetector
 
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
+
+class ThreadedCamera:
+    """Continuously grabs frames in a background thread so detection never waits for I/O."""
+
+    def __init__(self, source, width=640, height=480):
+        if isinstance(source, int) and platform.system() == "Windows":
+            self._cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+        else:
+            self._cap = cv2.VideoCapture(source)
+
+        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        self._frame = None
+        self._ret = False
+        self._lock = threading.Lock()
+        self._stopped = False
+
+        # Read first frame synchronously to confirm camera works
+        self._ret, self._frame = self._cap.read()
+        if not self._ret:
+            return
+
+        self._thread = threading.Thread(target=self._update, daemon=True)
+        self._thread.start()
+
+    def _update(self):
+        while not self._stopped:
+            ret, frame = self._cap.read()
+            with self._lock:
+                self._ret = ret
+                self._frame = frame
+            if not ret:
+                break
+
+    def read(self):
+        with self._lock:
+            return self._ret, self._frame.copy() if self._frame is not None else None
+
+    def isOpened(self):
+        return self._cap.isOpened() and self._ret
+
+    def release(self):
+        self._stopped = True
+        self._cap.release()
 
 
 def parse_args():
@@ -47,6 +98,8 @@ def parse_args():
                         help="Enable CSV logging of detections")
     parser.add_argument("--skip-frames", type=int, default=0,
                         help="Skip N frames between detections (0=process every frame)")
+    parser.add_argument("--cam-res", type=str, default=None,
+                        help="Camera resolution WxH (e.g. 320x240, 640x480)")
     return parser.parse_args()
 
 
@@ -84,22 +137,22 @@ def main():
     if not roi_mgr.rois:
         print("WARNING: No ROIs defined. Run calibrate_roi.py first.")
 
-    if isinstance(cam_source, int) and platform.system() == "Windows":
-        cap = cv2.VideoCapture(cam_source, cv2.CAP_DSHOW)
+    if args.cam_res:
+        cw, ch = map(int, args.cam_res.split("x"))
     else:
-        cap = cv2.VideoCapture(cam_source)
+        cw = config.get("frame_width", 640)
+        ch = config.get("frame_height", 480)
+
+    cap = ThreadedCamera(cam_source, width=cw, height=ch)
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera source {cam_source}")
         return
 
-    width = config.get("frame_width", 640)
-    height = config.get("frame_height", 480)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-
     log_file, csv_writer = setup_logger(args.log)
 
-    print(f"\nMonitoring started | Model: {detector.name} | Camera: {cam_source} | ROIs: {len(roi_mgr.rois)}")
+    skip_info = f" | skip={args.skip_frames}" if args.skip_frames else ""
+    res_info = f" | res={cw}x{ch}"
+    print(f"\nMonitoring started | Model: {detector.name} | Camera: {cam_source} | ROIs: {len(roi_mgr.rois)}{res_info}{skip_info}")
     print("Press Q to quit.\n")
 
     fps_counter = 0
@@ -112,9 +165,9 @@ def main():
     try:
         while True:
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame is None:
                 if isinstance(cam_source, str):
-                    break  # end of video file
+                    break
                 print("ERROR: Failed to read frame")
                 break
 
